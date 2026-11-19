@@ -7,6 +7,8 @@ from src.recommender import (
     Song,
     UserProfile,
     load_songs,
+    profile_from_query,
+    recommend_from_query,
     recommend_songs,
     score_song,
 )
@@ -128,3 +130,53 @@ def test_load_songs_converts_csv_numeric_fields():
 
 def test_recommender_returns_empty_list_for_nonpositive_k():
     assert recommend_songs({}, [{"title": "Only song"}], k=0) == []
+
+
+def test_query_recommendations_retrieve_and_explain_catalog_songs():
+    csv_path = Path(__file__).resolve().parents[1] / "data" / "songs.csv"
+    songs = load_songs(str(csv_path))
+
+    profile, results, answer = recommend_from_query(
+        "I want chill lofi, low energy, and acoustic music",
+        songs,
+        k=3,
+    )
+
+    assert profile == {
+        "genre": "lofi",
+        "mood": "chill",
+        "energy": 0.25,
+        "likes_acoustic": True,
+    }
+    assert results[0][0]["title"] == "Library Rain"
+    assert "Library Rain by Paper Lanterns" in answer
+    assert "acoustic preference (+0.43)" in answer
+
+
+def test_query_parser_handles_numeric_energy_and_acoustic_negation():
+    profile = profile_from_query(
+        "pop with energy 0.8, but not acoustic",
+        [{"genre": "pop", "mood": "happy"}],
+    )
+
+    assert profile == {"genre": "pop", "energy": 0.8, "likes_acoustic": False}
+
+
+@pytest.mark.parametrize(
+    ("query", "message"),
+    [
+        ("  ", "Enter a music request"),
+        ("give me something new", "couldn't identify"),
+        ("pop energy 1.2", "number from 0 to 1"),
+    ],
+)
+def test_query_guardrails_explain_unusable_requests(query, message):
+    songs = [{"genre": "pop", "mood": "happy", "energy": 0.8}]
+
+    with pytest.raises(ValueError, match=message):
+        recommend_from_query(query, songs)
+
+
+def test_query_recommendations_require_positive_result_count():
+    with pytest.raises(ValueError, match="at least 1"):
+        recommend_from_query("pop", [{"genre": "pop"}], k=0)

@@ -1,0 +1,14 @@
+flowchart TD
+    U[User request] --> I[Streamlit browser UI or CLI]
+    I --> P[Query parser and input guardrails]
+    P -->|Supported preferences| R[Content-based scorer and ranker]
+    C[(Local songs.csv)] --> R
+    R -->|Ranked catalog records and score reasons| G[Grounded response builder]
+    G --> O[Recommendations and explanations]
+    O --> U
+
+    P -.->|Empty, unsupported, or invalid input| E[Actionable error]
+    E --> I
+
+    T[Automated pytest checks] -->|Parsing, ranking, grounding, guardrails| R
+    H[Human reviewer] -->|Spot-check output against catalog| O

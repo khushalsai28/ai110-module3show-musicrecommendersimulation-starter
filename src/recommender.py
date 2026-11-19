@@ -1,7 +1,12 @@
 import csv
+import logging
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -155,3 +160,108 @@ def recommend_songs(
         (song, score, "; ".join(reasons))
         for song, score, reasons in ranked_songs[:max(k, 0)]
     ]
+
+
+def _find_first_label(query: str, labels: List[str]) -> str | None:
+    matches = []
+    for label in labels:
+        phrase = re.escape(label.casefold()).replace(r"\ ", r"\s+")
+        match = re.search(
+            rf"(?<![a-z0-9]){phrase}(?![a-z0-9])",
+            query,
+        )
+        if match:
+            matches.append((match.start(), -len(label), label))
+    return min(matches)[2] if matches else None
+
+
+def _extract_energy(query: str) -> float | None:
+    numeric = re.search(
+        r"\benergy\s*(?:of|at|=|:)?\s*(-?\d+(?:\.\d+)?)",
+        query,
+    )
+    if numeric:
+        energy = float(numeric.group(1))
+        if not 0.0 <= energy <= 1.0:
+            raise ValueError("Energy must be a number from 0 to 1.")
+        return energy
+
+    hints = (
+        (0.25, ("low energy", "calm", "chill", "relaxed", "soft", "mellow", "wind down")),
+        (0.5, ("moderate energy", "medium energy", "steady")),
+        (0.85, ("high energy", "energetic", "upbeat", "intense", "workout", "dance")),
+    )
+    matches = []
+    for energy, phrases in hints:
+        for phrase in phrases:
+            match = re.search(
+                rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])",
+                query,
+            )
+            if match:
+                matches.append((match.start(), energy))
+    return min(matches)[1] if matches else None
+
+
+def profile_from_query(query: str, songs: List[Dict]) -> Dict:
+    """Extract catalog labels and preference cues from a natural-language request."""
+    normalized_query = " ".join(query.casefold().replace("-", " ").split())
+    if not normalized_query:
+        raise ValueError("Enter a music request before searching.")
+
+    genres = sorted({str(song["genre"]) for song in songs if song.get("genre")})
+    moods = sorted({str(song["mood"]) for song in songs if song.get("mood")})
+    profile: Dict = {}
+    genre = _find_first_label(normalized_query, genres)
+    mood = _find_first_label(normalized_query, moods)
+    energy = _extract_energy(normalized_query)
+    if genre:
+        profile["genre"] = genre
+    if mood:
+        profile["mood"] = mood
+    if energy is not None:
+        profile["energy"] = energy
+
+    if re.search(
+        r"\b(?:not|no|non|avoid|don't want|do not want)\s+acoustic\b",
+        normalized_query,
+    ):
+        profile["likes_acoustic"] = False
+    elif re.search(r"\b(?:acoustic|unplugged)\b", normalized_query):
+        profile["likes_acoustic"] = True
+
+    if not profile:
+        logger.info("Query contained no recognized catalog preferences")
+        raise ValueError(
+            "I couldn't identify a genre, mood, energy, or acoustic preference. "
+            "Try a catalog genre or mood such as 'lofi', 'chill', or 'pop'."
+        )
+
+    logger.info("Extracted music preferences: %s", profile)
+    return profile
+
+
+def recommend_from_query(
+    query: str,
+    songs: List[Dict],
+    k: int = 5,
+) -> Tuple[Dict, List[Tuple[Dict, float, str]], str]:
+    """Retrieve and explain catalog songs using preferences found in a request."""
+    if k < 1:
+        raise ValueError("The number of recommendations must be at least 1.")
+
+    profile = profile_from_query(query, songs)
+    results = recommend_songs(profile, songs, k=k)
+    logger.info("Retrieved %s recommendations from %s catalog songs", len(results), len(songs))
+
+    if not results:
+        return profile, results, "The song catalog is empty, so I couldn't find a recommendation."
+
+    song, score, explanation = results[0]
+    answer = (
+        f"I found {len(songs)} songs in the catalog for your request. "
+        f"Top pick: {song['title']} by {song['artist']} "
+        f"({song['genre']}, {song['mood']}, energy {song['energy']:.2f}). "
+        f"It ranked first because {explanation} (score {score:.2f})."
+    )
+    return profile, results, answer
